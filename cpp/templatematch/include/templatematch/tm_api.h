@@ -21,6 +21,7 @@ typedef struct TM_Params {
   double iou_threshold;    /**< 重叠框 IOU 去重阈值，默认 0.0 */
   double angle;            /**< 匹配角度范围，默认 0 */
   double min_area;         /**< 顶层金字塔最小面积，默认 256 */
+  double top_angle_step;   /**< 顶层角度步长（度），默认 5.0 */
 } TM_Params;
 
 /** 单次匹配结果（与 C++ MatchResult 对应） */

@@ -1,6 +1,10 @@
 #include "PatternMatching.h"
 #include <opencv2/highgui.hpp>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #ifdef __aarch64__
 #include <arm_neon.h>
 #endif
@@ -796,16 +800,14 @@ namespace template_matching {
 		s_TemplData* pTemplData = &m_TemplData;
 
 		//第一階段以最頂層找出大致角度與ROI
-		double dAngleStep = atan (2.0 / max (pTemplData->vecPyramid[iTopLayer].cols, pTemplData->vecPyramid[iTopLayer].rows)) * R2D;
-			
-			// 验证角度步长
-			if (!isfinite(dAngleStep) || dAngleStep <= 0.0)
-				dAngleStep = 0.5;
-			
-			
+		double dAngleStep;
+		if (matchParam_.topAngleStep > 0)
+			dAngleStep = matchParam_.topAngleStep; // 配置指定步长（>0 时生效）
+		else
+			dAngleStep = atan(2.0 / max(pTemplData->vecPyramid[iTopLayer].cols, pTemplData->vecPyramid[iTopLayer].rows)) * R2D; // 自适应：基于顶层模板尺寸
 
-
-		//double dAngleStep = atan(2.0 / max(pTemplData->vecPyramid[0].cols, pTemplData->vecPyramid[0].rows)) * R2D;
+		// 顶层每角度最多保留的候选数（减少进入精搜的总量）
+		int iTopKeepPerAngle = matchParam_.maxCount + 1;
 
 		vector<double> vecAngles;
 
@@ -813,9 +815,8 @@ namespace template_matching {
 			vecAngles.push_back(0.0);
 		else
 		{
+			// 仅正向 0° ~ +angle，+360 与 -360 等价，无需重复搜索负向
 			for (double dAngle = 0; dAngle < matchParam_.angle + dAngleStep; dAngle += dAngleStep)
-				vecAngles.push_back(dAngle);
-			for (double dAngle = -dAngleStep; dAngle > -matchParam_.angle - dAngleStep; dAngle -= dAngleStep)
 				vecAngles.push_back(dAngle);
 		}
 
@@ -833,13 +834,71 @@ namespace template_matching {
 
 		Size sizePat = pTemplData->vecPyramid[iTopLayer].size();
 		bool bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size().area() / sizePat.area() > 500) && matchParam_.maxCount > 10;
+#ifdef _OPENMP
+		#pragma omp parallel
+		{
+			vector<s_MatchParameter> vecLocal;
+			#pragma omp for schedule(dynamic)
+			for (int i = 0; i < iSize; i++)
+			{
+				Mat matRotatedSrc, matR = getRotationMatrix2D(ptCenter, vecAngles[i], 1);
+				Mat matResult;
+				Point ptMaxLoc;
+				double dValue, dMaxVal;
+				Size sizeBest = GetBestRotationSize(vecMatSrcPyr[iTopLayer].size(), pTemplData->vecPyramid[iTopLayer].size(), vecAngles[i]);
+
+				float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
+				float fTranslationY = (sizeBest.height - 1) / 2.0f - ptCenter.y;
+				matR.at<double>(0, 2) += fTranslationX;
+				matR.at<double>(1, 2) += fTranslationY;
+				warpAffine(vecMatSrcPyr[iTopLayer], matRotatedSrc, matR, sizeBest, INTER_LINEAR, BORDER_CONSTANT, Scalar(pTemplData->iBorderColor));
+
+				MatchTemplate(matRotatedSrc, pTemplData, matResult, iTopLayer, false);
+
+				if (bCalMaxByBlock)
+				{
+					s_BlockMax blockMax(matResult, pTemplData->vecPyramid[iTopLayer].size());
+					blockMax.GetMaxValueLoc(dMaxVal, ptMaxLoc);
+					if (dMaxVal >= vecLayerScore[iTopLayer])
+					{
+						vecLocal.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+						for (int j = 0; j < iTopKeepPerAngle; j++)
+						{
+							ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
+							if (dValue < vecLayerScore[iTopLayer])
+								break;
+							vecLocal.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+						}
+					}
+				}
+				else
+				{
+					minMaxLoc(matResult, 0, &dMaxVal, 0, &ptMaxLoc);
+					if (dMaxVal >= vecLayerScore[iTopLayer])
+					{
+						vecLocal.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+						for (int j = 0; j < iTopKeepPerAngle; j++)
+						{
+							ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
+							if (dValue < vecLayerScore[iTopLayer])
+								break;
+							vecLocal.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+						}
+					}
+				}
+			}
+			#pragma omp critical(merge_vecMatchParameter)
+			{
+				vecMatchParameter.insert(vecMatchParameter.end(), vecLocal.begin(), vecLocal.end());
+			}
+		}
+#else
 		for (int i = 0; i < iSize; i++)
 		{
 			Mat matRotatedSrc, matR = getRotationMatrix2D(ptCenter, vecAngles[i], 1);
 			Mat matResult;
 			Point ptMaxLoc;
 			double dValue, dMaxVal;
-			double dRotate = clock();
 			Size sizeBest = GetBestRotationSize(vecMatSrcPyr[iTopLayer].size(), pTemplData->vecPyramid[iTopLayer].size(), vecAngles[i]);
 
 			float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
@@ -857,7 +916,7 @@ namespace template_matching {
 				if (dMaxVal < vecLayerScore[iTopLayer])
 					continue;
 				vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-				for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+				for (int j = 0; j < iTopKeepPerAngle; j++)
 				{
 					ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold, blockMax);
 					if (dValue < vecLayerScore[iTopLayer])
@@ -871,7 +930,7 @@ namespace template_matching {
 				if (dMaxVal < vecLayerScore[iTopLayer])
 					continue;
 				vecMatchParameter.push_back(s_MatchParameter(Point2f(ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
-				for (int j = 0; j < matchParam_.maxCount + MATCH_CANDIDATE_NUM - 1; j++)
+				for (int j = 0; j < iTopKeepPerAngle; j++)
 				{
 					ptMaxLoc = GetNextMaxLoc(matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size(), dValue, matchParam_.iouThreshold);
 					if (dValue < vecLayerScore[iTopLayer])
@@ -880,6 +939,7 @@ namespace template_matching {
 				}
 			}
 		}
+#endif
 		std::sort(vecMatchParameter.begin(), vecMatchParameter.end(), compareScoreBig2Small);
 
 
@@ -928,10 +988,13 @@ namespace template_matching {
 		//第一階段結束
 		bool bSubPixelEstimation = m_bSubPixel;
 		int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
-		//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
+		// 限制进入精搜的候选数量，避免大量低质量候选浪费时间
+		int iMaxRefine = min((int)vecMatchParameter.size(), matchParam_.maxCount * 3 + MATCH_CANDIDATE_NUM);
 		vector<s_MatchParameter> vecAllResult;
-		for (int i = 0; i < (int)vecMatchParameter.size(); i++)
-			//for (int i = 0; i < iSearchSize; i++)
+#ifdef _OPENMP
+		#pragma omp parallel for schedule(dynamic)
+#endif
+		for (int i = 0; i < iMaxRefine; i++)
 		{
 			double dRAngle = -vecMatchParameter[i].dMatchAngle * D2R;
 			Point2f ptLT = ptRotatePt2f(vecMatchParameter[i].pt, ptCenter, dRAngle);
@@ -947,6 +1010,9 @@ namespace template_matching {
 			if (iTopLayer <= iStopLayer)
 			{
 				vecMatchParameter[i].pt = Point2d(ptLT * ((iTopLayer == 0) ? 1 : 2));
+#ifdef _OPENMP
+				#pragma omp critical(refine_result)
+#endif
 				vecAllResult.push_back(vecMatchParameter[i]);
 			}
 			else
@@ -980,11 +1046,11 @@ namespace template_matching {
 								vecAngles.push_back(dMatchedAngle + dAngleStep * i);
 					}
 					Point2f ptSrcCenter((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
-					iSize = (int)vecAngles.size();
-					vector<s_MatchParameter> vecNewMatchParameter(iSize);
+					int iRefineSize = (int)vecAngles.size();
+					vector<s_MatchParameter> vecNewMatchParameter(iRefineSize);
 					int iMaxScoreIndex = 0;
 					double dBigValue = -1;
-					for (int j = 0; j < iSize; j++)
+					for (int j = 0; j < iRefineSize; j++)
 					{
 						Mat matResult, matRotatedSrc;
 						double dMaxValue = 0;
@@ -1039,6 +1105,9 @@ namespace template_matching {
 					if (iLayer == iStopLayer)
 					{
 						vecNewMatchParameter[iMaxScoreIndex].pt = pt * static_cast<float>(iStopLayer == 0 ? 1 : 2);
+#ifdef _OPENMP
+						#pragma omp critical(refine_result)
+#endif
 						vecAllResult.push_back(vecNewMatchParameter[iMaxScoreIndex]);
 					}
 					else

@@ -45,11 +45,12 @@ struct MatchResult {
 
 /** 参数 */
 struct Params {
-  int max_count = 200;
+  int max_count = 1;
   double score_threshold = 0.5;
   double iou_threshold = 0.0;
   double angle = 0.0;
   double min_area = 256.0;
+  double top_angle_step = 5.0;  /**< 顶层角度步长（度） */
 };
 
 /**
@@ -64,6 +65,7 @@ public:
     p.iou_threshold = params.iou_threshold;
     p.angle = params.angle;
     p.min_area = params.min_area;
+    p.top_angle_step = params.top_angle_step;
     handle_ = tm_create(&p);
   }
 

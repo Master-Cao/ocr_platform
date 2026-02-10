@@ -7,7 +7,9 @@
  *       demo ../OcrDetect/models scene.png template.png
  */
 #include <templatematch/Matcher.hpp>
+#include <templatematch/ConfigLoader.hpp>
 #include <ocrdetect/OcrEngine.hpp>
+#include <ocrdetect/ConfigLoader.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
 #include <iostream>
@@ -17,7 +19,7 @@
 
 namespace fs = std::filesystem;
 
-static void runOcrDemo(const std::string& modelsDir, const std::string& imagePath) {
+static void runOcrDemo(const std::string& modelsDir, const std::string& imagePath, const ocrdetect::OcrDetectOptions& ocrOpt) {
   std::cout << "\n========== OCR 检测示例 ==========\n";
   std::cout << "模型目录: " << modelsDir << "  图片: " << imagePath << "\n";
 
@@ -32,6 +34,7 @@ static void runOcrDemo(const std::string& modelsDir, const std::string& imagePat
     std::cerr << "OCR 引擎初始化失败，请检查模型目录: " << modelsDir << "\n";
     return;
   }
+  engine.setNumThreads(ocrOpt.num_threads);
 
   fs::path pPre(imagePath);
   std::string preprocessPath = (pPre.parent_path() / (pPre.stem().string() + "_preprocess" + pPre.extension().string())).string();
@@ -40,7 +43,7 @@ static void runOcrDemo(const std::string& modelsDir, const std::string& imagePat
   fs::create_directories(cropsDir);
   engine.setPartImagesSavePath(cropsDir);
 
-  auto blocks = engine.detect(img, 0, 960, 0.6f, 0.3f, 2.0f, true, false);
+  auto blocks = engine.detect(img, ocrOpt);
   std::cout << "检测到 " << blocks.size() << " 个文本框\n";
   std::string fullText;
 
@@ -76,7 +79,7 @@ static void runOcrDemo(const std::string& modelsDir, const std::string& imagePat
   std::cout << "========== OCR 示例结束 ==========\n";
 }
 
-static void runTemplateMatchDemo(const std::string& imagePath, const std::string& templatePath) {
+static void runTemplateMatchDemo(const std::string& imagePath, const std::string& templatePath, const templatematch::Params& tmParams) {
   std::cout << "\n========== 模板匹配示例 ==========\n";
   std::cout << "场景图: " << imagePath << "  模板图: " << templatePath << "\n";
 
@@ -87,7 +90,7 @@ static void runTemplateMatchDemo(const std::string& imagePath, const std::string
     return;
   }
 
-  templatematch::Matcher matcher(templatematch::Params{});
+  templatematch::Matcher matcher(tmParams);
   if (!matcher.setTemplateFromFile(templatePath)) {
     std::cerr << "设置模板失败\n";
     return;
@@ -103,7 +106,8 @@ static void runTemplateMatchDemo(const std::string& imagePath, const std::string
 }
 
 static void runCombinedDemo(const std::string& modelsDir, const std::string& imagePath,
-                           const std::string& templatePath) {
+                           const std::string& templatePath,
+                           const templatematch::Params& tmParams, const ocrdetect::OcrDetectOptions& ocrOpt) {
   std::cout << "\n========== 组合示例：先匹配再 OCR ==========\n";
   cv::Mat scene = cv::imread(imagePath);
   cv::Mat templ = cv::imread(templatePath);
@@ -112,7 +116,7 @@ static void runCombinedDemo(const std::string& modelsDir, const std::string& ima
     return;
   }
 
-  templatematch::Matcher matcher(templatematch::Params{});
+  templatematch::Matcher matcher(tmParams);
   if (!matcher.setTemplateFromFile(templatePath)) {
     std::cerr << "设置模板失败\n";
     return;
@@ -128,6 +132,7 @@ static void runCombinedDemo(const std::string& modelsDir, const std::string& ima
     std::cerr << "OCR 引擎初始化失败\n";
     return;
   }
+  engine.setNumThreads(ocrOpt.num_threads);
 
   const auto& r = matches[0];
   std::vector<cv::Point2f> pts = {
@@ -148,7 +153,7 @@ static void runCombinedDemo(const std::string& modelsDir, const std::string& ima
     std::cout << "已保存组合裁剪图: " << cropPath << "\n";
   std::string preprocessCombPath = (pComb.parent_path() / (pComb.stem().string() + "_combined_preprocess" + pComb.extension().string())).string();
   engine.setPreprocessSavePath(preprocessCombPath);
-  auto blocks = engine.detect(cropped, 0, 256, 0.6f, 0.3f, 2.0f, true, true);
+  auto blocks = engine.detect(cropped, ocrOpt, true);
   std::cout << "首个匹配区域识别到 " << blocks.size() << " 行文字\n";
 
   cv::Mat visCropped = cropped.clone();
@@ -174,10 +179,11 @@ static void runCombinedDemo(const std::string& modelsDir, const std::string& ima
 }
 
 static void printUsage(const char* prog) {
-  std::cout << "用法: " << prog << " [模型目录] [待检测图片] [模板图片]\n"
+  std::cout << "用法: " << prog << " [模型目录] [待检测图片] [模板图片] [--config-dir <目录>]\n"
             << "  模型目录: 含 det.onnx/cls.onnx/rec.onnx/keys，默认 ../OcrDetect/models\n"
             << "  待检测图片: 必填\n"
-            << "  模板图片: 可选，提供则运行匹配+组合示例\n\n"
+            << "  模板图片: 可选，提供则运行匹配+组合示例\n"
+            << "  --config-dir: 配置文件目录，默认 ./config\n\n"
             << "示例:\n  " << prog << " ../OcrDetect/models test.png\n"
             << "  " << prog << " ../OcrDetect/models scene.png template.png\n";
 }
@@ -186,18 +192,33 @@ int main(int argc, char* argv[]) {
   std::string modelsDir = "../OcrDetect/models";
   std::string imagePath;
   std::string templatePath;
-  if (argc >= 2) modelsDir = argv[1];
-  if (argc >= 3) imagePath = argv[2];
-  if (argc >= 4) templatePath = argv[3];
+  std::string configDir = "config";
+  std::vector<std::string> posArgs;
+  for (int i = 1; i < argc; i++) {
+    if (std::string(argv[i]) == "--config-dir" && i + 1 < argc) {
+      configDir = argv[++i];
+    } else {
+      posArgs.push_back(argv[i]);
+    }
+  }
+  if (posArgs.size() >= 1) modelsDir = posArgs[0];
+  if (posArgs.size() >= 2) imagePath = posArgs[1];
+  if (posArgs.size() >= 3) templatePath = posArgs[2];
+
+  std::vector<std::string> tmPaths = { configDir + "/templatematch.conf", "config/templatematch.conf", "../config/templatematch.conf" };
+  std::vector<std::string> ocrPaths = { configDir + "/ocrdetect.conf", "config/ocrdetect.conf", "../config/ocrdetect.conf" };
+  std::string tmLoaded, ocrLoaded;
+  auto tmParams = templatematch::loadParamsFromFileWithFallback(tmPaths, &tmLoaded);
+  auto ocrOpt = ocrdetect::loadOcrDetectConfigFromFileWithFallback(ocrPaths, &ocrLoaded);
 
   if (imagePath.empty()) {
     printUsage(argv[0]);
     return 0;
   }
   if (!templatePath.empty()) {
-    runTemplateMatchDemo(imagePath, templatePath);
-    runCombinedDemo(modelsDir, imagePath, templatePath);
+    runTemplateMatchDemo(imagePath, templatePath, tmParams);
+    runCombinedDemo(modelsDir, imagePath, templatePath, tmParams, ocrOpt);
   }
-  runOcrDemo(modelsDir, imagePath);
+  runOcrDemo(modelsDir, imagePath, ocrOpt);
   return 0;
 }

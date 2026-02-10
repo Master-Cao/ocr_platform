@@ -111,6 +111,9 @@ if(UNIX)
   )
 endif()
 
+# 安装配置文件到 config/
+install(FILES config/ocrdetect.conf DESTINATION config)
+
 # 安装主库（移除了 test_rec 可执行程序）
 install(TARGETS ocrdetect
   RUNTIME DESTINATION bin

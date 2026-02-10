@@ -6,7 +6,9 @@
  * 示例: test_ocr ../OcrDetect/models test.png
  */
 #include <ocrdetect/OcrEngine.hpp>
+#include <ocrdetect/ConfigLoader.hpp>
 #include <opencv2/opencv.hpp>
+#include <vector>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -60,12 +62,20 @@ static void drawOcrResult(const cv::Mat& orgImg,
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        printf("usage: %s <models_dir> <image_path>\n", argv[0]);
+        printf("usage: %s <models_dir> <image_path> [--config-dir <dir>]\n", argv[0]);
         printf("example: %s ../OcrDetect/models test.png\n", argv[0]);
         return 1;
     }
     std::string modelsDir = argv[1];
     std::string imagePath = argv[2];
+    std::string configDir = "config";
+    for (int i = 3; i < argc; i++) {
+        if (std::string(argv[i]) == "--config-dir" && i + 1 < argc)
+            configDir = argv[++i];
+    }
+    std::vector<std::string> ocrPaths = { configDir + "/ocrdetect.conf", "config/ocrdetect.conf", "../config/ocrdetect.conf" };
+    std::string ocrLoaded;
+    auto ocrOpt = ocrdetect::loadOcrDetectConfigFromFileWithFallback(ocrPaths, &ocrLoaded);
 
     printf("models_dir: %s\n", modelsDir.c_str());
     ocrdetect::OcrEngine engine(modelsDir);
@@ -74,6 +84,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     printf("OCR engine initialized.\n");
+    engine.setNumThreads(ocrOpt.num_threads);
 
     cv::Mat img = cv::imread(imagePath);
     if (img.empty()) {
@@ -83,7 +94,7 @@ int main(int argc, char* argv[]) {
     printf("image: %s (%d x %d)\n", imagePath.c_str(), img.cols, img.rows);
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    auto blocks = engine.detect(img, 10, 1280, 0.35f, 0.2f, 2.5f, true, false);
+    auto blocks = engine.detect(img, ocrOpt);
     auto t1 = std::chrono::high_resolution_clock::now();
     // 以毫秒为单位统计耗时
     double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();

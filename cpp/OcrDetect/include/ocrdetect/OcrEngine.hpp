@@ -9,6 +9,7 @@
 #define OCRDETECT_OCR_ENGINE_HPP
 
 #include "ocr_api.h"
+#include "ConfigLoader.hpp"
 #include <opencv2/core.hpp>
 #include <vector>
 #include <string>
@@ -45,6 +46,15 @@ public:
   /** 设置裁剪后的文本框图像保存目录（调试用），下次 detect 时保存 part_0.png, part_1.png, ... */
   void setPartImagesSavePath(const std::string& path) {
     if (handle_) ocr_set_part_imgs_save_path(handle_, path.c_str());
+  }
+
+  /** 使用 OcrDetectOptions 检测（从配置文件加载），use_crop_len=true 时用 crop_short_side_len */
+  std::vector<TextBlock> detect(const cv::Mat& image, const OcrDetectOptions& opt, bool use_crop_len = false) {
+    setNumThreads(opt.num_threads);
+    int shortLen = use_crop_len ? opt.crop_short_side_len : opt.short_side_len;
+    return detect(image, opt.padding, shortLen,
+      opt.box_score_thresh, opt.box_thresh, opt.un_clip_ratio,
+      opt.do_angle != 0, opt.most_angle != 0);
   }
 
   /**

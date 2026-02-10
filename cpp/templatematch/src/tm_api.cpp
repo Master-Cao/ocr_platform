@@ -17,6 +17,7 @@ static void to_param(const TM_Params* p, template_matching::MatcherParam& out) {
     out.iouThreshold = p->iou_threshold;
     out.angle = p->angle;
     out.minArea = p->min_area;
+    out.topAngleStep = p->top_angle_step;
   }
 }
 

@@ -26,5 +26,16 @@ if(BUILD_OCRDETECT)
   add_subdirectory(OcrDetect)
 endif()
 
+# 复制配置文件到 build/config/，便于运行时从 build/bin 使用 --config-dir ../config
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/config)
+if(BUILD_TEMPLATEMATCH)
+  configure_file(${CMAKE_SOURCE_DIR}/templatematch/config/templatematch.conf
+    ${CMAKE_BINARY_DIR}/config/templatematch.conf COPYONLY)
+endif()
+if(BUILD_OCRDETECT)
+  configure_file(${CMAKE_SOURCE_DIR}/OcrDetect/config/ocrdetect.conf
+    ${CMAKE_BINARY_DIR}/config/ocrdetect.conf COPYONLY)
+endif()
+
 # examples: test_ocr (OCR only), demo (templatematch + OCR)
 add_subdirectory(examples)
