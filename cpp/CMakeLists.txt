@@ -39,3 +39,10 @@ endif()
 
 # examples: test_ocr (OCR only), demo (templatematch + OCR)
 add_subdirectory(examples)
+
+# server: HTTP 服务端（TM + OCR 加载、预热、POST /api）
+if(BUILD_TEMPLATEMATCH AND BUILD_OCRDETECT)
+  add_subdirectory(server)
+  configure_file(${CMAKE_SOURCE_DIR}/server/config/server.conf
+    ${CMAKE_BINARY_DIR}/config/server.conf COPYONLY)
+endif()
